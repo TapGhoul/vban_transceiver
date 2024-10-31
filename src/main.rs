@@ -73,7 +73,7 @@ fn main() {
         })
     };
 
-    let (mut producer, mut consumer) = HeapRb::new(48000 * 30).split();
+    let (mut producer, mut consumer) = HeapRb::new(48000 * 1).split();
 
     let _speaker = {
         let mut is_warming_buffer = true;
