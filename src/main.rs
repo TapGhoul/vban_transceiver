@@ -9,6 +9,8 @@ use std::env::args;
 use std::io::{Cursor, Seek};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::process::exit;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 mod stream;
 
@@ -73,12 +75,20 @@ fn main() {
         })
     };
 
+    let buffer_invalid = Arc::new(AtomicBool::new(false));
     let (mut producer, mut consumer) = HeapRb::new(48000 * 1).split();
 
     let _speaker = {
         let mut is_warming_buffer = true;
+        let buffer_invalid = buffer_invalid.clone();
         setup_speaker(move |data: &mut [i16]| {
-            if is_warming_buffer && consumer.occupied_len() >= data.len() {
+            if buffer_invalid.load(Ordering::Acquire) {
+                println!("Cleared invalid buffer");
+                data.fill(0);
+                consumer.clear();
+                is_warming_buffer = true;
+                buffer_invalid.store(false, Ordering::Release);
+            } else if is_warming_buffer && consumer.occupied_len() >= data.len() {
                 println!("Buffer warmed!");
                 is_warming_buffer = false;
             } else if !is_warming_buffer && consumer.occupied_len() < data.len() {
@@ -108,6 +118,7 @@ fn main() {
         let expected_frame = next_expected_frame.unwrap_or(frame);
         if expected_frame != frame {
             println!("WARN: Discontinuity: expected {expected_frame}, got {frame}");
+            buffer_invalid.store(true, Ordering::Release);
         }
         next_expected_frame = Some(frame.wrapping_add(1));
 
