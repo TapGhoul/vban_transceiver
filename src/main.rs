@@ -121,11 +121,16 @@ fn main() {
         };
 
         let expected_frame = next_expected_frame.unwrap_or(frame);
+        next_expected_frame = Some(frame.wrapping_add(1));
+
+        if buffer_invalid.load(Ordering::Acquire) {
+            continue;
+        }
+
         if expected_frame != frame {
             println!("WARN: Discontinuity: expected {expected_frame}, got {frame}");
             buffer_invalid.store(true, Ordering::Release);
         }
-        next_expected_frame = Some(frame.wrapping_add(1));
 
         let chunks = buf.chunks_exact(SAMPLE_BYTE_SIZE);
         if !chunks.remainder().is_empty() {
