@@ -76,7 +76,7 @@ fn main() {
     };
 
     let buffer_invalid = Arc::new(AtomicBool::new(false));
-    let (mut producer, mut consumer) = HeapRb::new(48000 * 1).split();
+    let (mut producer, mut consumer) = HeapRb::new(10240).split();
 
     let _speaker = {
         let mut is_warming_buffer = true;
@@ -111,6 +111,11 @@ fn main() {
 
     loop {
         let (len, _) = socket.recv_from(&mut buf).unwrap();
+
+        if buffer_invalid.load(Ordering::Acquire) {
+            continue;
+        }
+
         let Some((frame, sample_count, buf)) = try_parse_header(&stream_name, &buf[..len]) else {
             continue;
         };
@@ -136,10 +141,12 @@ fn main() {
 
         // channels = 2
         let expected_count = sample_count * 2;
-        if added_count > expected_count {
+        if added_count < expected_count {
             println!("WARN: Buffer Overrun");
-        } else if added_count < expected_count {
-            println!("WARN: VBAN protocol violation - not enough data!");
+            buffer_invalid.store(true, Ordering::Release);
+        } else if added_count > expected_count {
+            println!("WARN: VBAN protocol violation - more data than expected!");
+            buffer_invalid.store(true, Ordering::Release);
         }
     }
 }
