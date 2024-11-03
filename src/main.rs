@@ -78,12 +78,15 @@ fn main() {
     let buffer_invalid = Arc::new(AtomicBool::new(false));
     let (mut producer, mut consumer) = HeapRb::new(10240).split();
 
+    // TODO: Figure out a better way to deal with latency
+
     let _speaker = {
         let mut is_warming_buffer = true;
         let buffer_invalid = buffer_invalid.clone();
         setup_speaker(move |data: &mut [i16]| {
             if buffer_invalid.load(Ordering::Acquire) {
                 println!("Cleared invalid buffer");
+                // Avoid a screech
                 data.fill(0);
                 consumer.clear();
                 is_warming_buffer = true;
@@ -139,15 +142,13 @@ fn main() {
             );
         }
 
-        // TODO: If all samples are 0, don't write - might help with latency? (we don't have an issue with latency atm)
-
         let added_count =
             producer.push_iter(chunks.map(|e| SampleFormat::from_le_bytes(e.try_into().unwrap())));
 
         // channels = 2
         let expected_count = sample_count * 2;
         if added_count < expected_count {
-            println!("WARN: Buffer Overrun");
+            println!("WARN: Buffer overrun");
             buffer_invalid.store(true, Ordering::Release);
         } else if added_count > expected_count {
             println!("WARN: VBAN protocol violation - more data than expected!");
