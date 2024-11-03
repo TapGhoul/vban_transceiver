@@ -115,10 +115,6 @@ fn main() {
     loop {
         let (len, _) = socket.recv_from(&mut buf).unwrap();
 
-        if buffer_invalid.load(Ordering::Acquire) {
-            continue;
-        }
-
         let Some((frame, sample_count, buf)) = try_parse_header(&stream_name, &buf[..len]) else {
             continue;
         };
