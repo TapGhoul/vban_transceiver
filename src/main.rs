@@ -7,7 +7,7 @@ use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 use std::env::args;
 use std::io::{Cursor, Seek};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{Ipv4Addr, ToSocketAddrs, UdpSocket};
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -22,8 +22,9 @@ fn main() {
     let stream_name = StreamName::try_from("Stream1").unwrap();
 
     let _stream = {
-        let ip: IpAddr = get_ip().parse().unwrap();
-        let addr = SocketAddr::from((ip, 6980));
+        let ip = get_ip();
+        let addr = (ip, 6980).to_socket_addrs().unwrap().next().unwrap();
+
         println!("Sending to {addr} on {stream_name}");
 
         let stream_name = stream_name.clone();
