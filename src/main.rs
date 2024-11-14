@@ -178,8 +178,8 @@ where
     mic.build_input_stream(
         &StreamConfig {
             channels: 1,
-            // This can probably be lower, but I haven't tested
-            buffer_size: BufferSize::Fixed(512),
+            // 512 is too low, have to go 1024 cus system goes crunchy
+            buffer_size: BufferSize::Fixed(1024),
             sample_rate: SampleRate(22050),
         },
         move |data: &[T], _| cb(data),
@@ -200,8 +200,8 @@ where
     mic.build_output_stream(
         &StreamConfig {
             channels: 2,
-            // Lowest I could get it without OS-level buffer underruns
-            buffer_size: BufferSize::Fixed(512),
+            // 512 is too low, have to go 1024 cus system goes crunchy
+            buffer_size: BufferSize::Fixed(1024),
             sample_rate: SampleRate(48000),
         },
         move |data: &mut [T], _| cb(data),
