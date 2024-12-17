@@ -7,7 +7,7 @@ use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 use std::env::args;
 use std::io::{Cursor, Seek};
-use std::net::{Ipv4Addr, ToSocketAddrs, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs, UdpSocket};
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -20,9 +20,9 @@ const SAMPLE_BYTE_SIZE: usize = size_of::<SampleFormat>();
 fn main() {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 6980)).unwrap();
     let stream_name = StreamName::try_from("Stream1").unwrap();
+    let ip = get_ip();
 
     let _stream = {
-        let ip = get_ip();
         let addr = (ip, 6980).to_socket_addrs().unwrap().next().unwrap();
 
         println!("Sending to {addr} on {stream_name}");
@@ -114,7 +114,10 @@ fn main() {
     let mut next_expected_frame = None;
 
     loop {
-        let (len, _) = socket.recv_from(&mut buf).unwrap();
+        let (len, addr) = socket.recv_from(&mut buf).unwrap();
+        if addr.ip() != ip {
+            continue;
+        }
 
         let Some((frame, sample_count, buf)) = try_parse_header(&stream_name, &buf[..len]) else {
             continue;
@@ -154,14 +157,17 @@ fn main() {
     }
 }
 
-fn get_ip() -> String {
+fn get_ip() -> IpAddr {
     let mut args = args();
     let bin = args.next().unwrap();
-    let ip = args.next();
+    let ip = args
+        .next()
+        .ok_or_else(|| "No address provided".to_string())
+        .and_then(|e| e.parse().map_err(|e| format!("Bad address: {e:?}")));
     match ip {
-        Some(e) => e,
-        None => {
-            println!("Usage: {bin} <ip>");
+        Ok(v) => v,
+        Err(err) => {
+            println!("Error: {err:?}\nUsage: {bin} <ip>");
             exit(-1);
         }
     }
