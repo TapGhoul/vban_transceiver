@@ -6,8 +6,10 @@ use cpal::{BufferSize, SampleRate, SizedSample, Stream, StreamConfig};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 use std::env::args;
+use std::error::Error;
 use std::io::{Cursor, Seek};
 use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs, UdpSocket};
+use std::num::NonZeroUsize;
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -20,7 +22,15 @@ const SAMPLE_BYTE_SIZE: usize = size_of::<SampleFormat>();
 fn main() {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 6980)).unwrap();
     let stream_name = StreamName::try_from("Stream1").unwrap();
-    let ip = get_ip();
+    let (ip, buffer_multiplier) = match get_args() {
+        Ok(v) => v,
+        Err(err) => {
+            let bin = args().next().unwrap();
+            println!("Error: {err:?}\nUsage: {bin} <ip> [buffer_multiplier]");
+            exit(-1);
+        }
+    };
+    println!("Starting with buffer multiplier of {buffer_multiplier}");
 
     let _stream = {
         let addr = (ip, 6980).to_socket_addrs().unwrap().next().unwrap();
@@ -92,7 +102,9 @@ fn main() {
                 consumer.clear();
                 is_warming_buffer = true;
                 buffer_invalid.store(false, Ordering::Release);
-            } else if is_warming_buffer && consumer.occupied_len() >= data.len() {
+            } else if is_warming_buffer
+                && consumer.occupied_len() >= data.len() * buffer_multiplier.get()
+            {
                 println!("Buffer warmed!");
                 is_warming_buffer = false;
             } else if !is_warming_buffer && consumer.occupied_len() < data.len() {
@@ -157,20 +169,22 @@ fn main() {
     }
 }
 
-fn get_ip() -> IpAddr {
-    let mut args = args();
-    let bin = args.next().unwrap();
+fn get_args() -> Result<(IpAddr, NonZeroUsize), Box<dyn Error>> {
+    let mut args = args().skip(1);
     let ip = args
         .next()
         .ok_or_else(|| "No address provided".to_string())
-        .and_then(|e| e.parse().map_err(|e| format!("Bad address: {e:?}")));
-    match ip {
-        Ok(v) => v,
-        Err(err) => {
-            println!("Error: {err:?}\nUsage: {bin} <ip>");
-            exit(-1);
-        }
-    }
+        .and_then(|e| e.parse().map_err(|e| format!("Bad address: {e:?}")))?;
+    let buffer_size = args
+        .next()
+        .map(|v| {
+            v.parse()
+                .map_err(|e| format!("Bad buffer multiplier: {e:?}"))
+        })
+        .transpose()?
+        .unwrap_or(1);
+
+    Ok((ip, buffer_size.try_into()?))
 }
 
 fn setup_mic<T, D>(mut cb: D) -> Stream
