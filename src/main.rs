@@ -37,7 +37,7 @@ fn main() {
     println!("Starting with buffer multiplier of {buffer_multiplier}");
 
     let stream_name = StreamName::try_from("Stream1").unwrap();
-    let _sender_handle = start_sender(addr, &stream_name);
+    let _sender_handle = start_mic(addr, &stream_name);
 
     let buffer_invalid = Arc::new(AtomicBool::new(false));
     let buffer_max_capacity = (MAX_VBAN_SAMPLES / SAMPLE_BYTE_SIZE)
@@ -46,9 +46,163 @@ fn main() {
 
     // TODO: cache-align sample sets by buffer size - crossbeam_utils::CachePadded might do the trick
     let (mut producer, consumer) = HeapRb::<SampleFormat>::new(buffer_max_capacity).split();
-    let _output_handle = start_audio_output(buffer_multiplier, consumer, buffer_invalid.clone());
+    let _output_handle = start_speaker(buffer_multiplier, consumer, buffer_invalid.clone());
 
     run_receiver(addr, &stream_name, buffer_invalid, &mut producer);
+}
+
+fn get_args() -> Result<(SocketAddr, NonZeroUsize), Box<dyn Error>> {
+    let mut args = args().skip(1);
+
+    let ip = args
+        .next()
+        .ok_or_else(|| "No address provided".to_string())
+        .and_then(|e| IpAddr::from_str(&e).map_err(|e| format!("Bad address: {e:?}")))?;
+
+    let buffer_size = args
+        .next()
+        .map(|v| NonZeroUsize::from_str(&v).map_err(|e| format!("Bad buffer multiplier: {e:?}")))
+        .transpose()?
+        .unwrap_or_else(|| unsafe { NonZeroUsize::new_unchecked(1) });
+
+    Ok((SocketAddr::from((ip, LISTEN_PORT)), buffer_size.try_into()?))
+}
+
+fn start_mic(addr: SocketAddr, stream_name: &StreamName) -> Stream {
+    let send_sock = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+    send_sock.connect(addr).unwrap();
+
+    println!("Sending to {addr} on {stream_name}");
+
+    let stream_name = stream_name.clone();
+
+    let mut idx: u32 = 0;
+    let mut send_buf = Cursor::new([0u8; MAX_VBAN_SAMPLES]);
+
+    create_mic(move |samples: &[SampleFormat]| {
+        // Max bytes: 1436
+        // Max samples: 256
+        let chunk_size = (MAX_VBAN_SAMPLES / SAMPLE_BYTE_SIZE).min(256);
+
+        for chunk in samples.chunks(chunk_size) {
+            let sample_count = chunk.len();
+
+            idx = idx.wrapping_add(1);
+            send_buf.rewind().unwrap();
+
+            stream::write_header(
+                &mut send_buf,
+                // TODO: Avoid a clone here
+                stream_name.clone(),
+                idx,
+                VBANResolution::S16,
+                (sample_count - 1) as u8,
+            );
+
+            // Realistically, this doesn't actually need a cursor - VBAN's header size is fixed.
+            // But ay, why not. I can change it later if I want.
+            let curr_offset = send_buf.position() as usize;
+            let packet_len = curr_offset + (sample_count * SAMPLE_BYTE_SIZE);
+
+            let sample_dst_buf = &mut send_buf.get_mut()[curr_offset..packet_len];
+
+            // If this is ever an issue, we could replace it with the unsafe "ptr::copy_nonoverlapping()"
+            // and just do the length checking ahead of time rather than in each iteration (as per how this works currently)
+            for (src, dst) in chunk
+                .into_iter()
+                .map(|e| e.to_le_bytes())
+                .zip(sample_dst_buf.chunks_mut(SAMPLE_BYTE_SIZE))
+            {
+                dst.copy_from_slice(src.as_slice())
+            }
+
+            let final_buf = &send_buf.get_ref()[..packet_len];
+            send_sock.send(final_buf).unwrap();
+        }
+    })
+}
+
+fn create_mic<T, D>(mut cb: D) -> Stream
+where
+    D: FnMut(&[T]) + Send + 'static,
+    T: SizedSample,
+{
+    let host = cpal::default_host();
+    let mic = host.default_input_device().unwrap();
+
+    mic.build_input_stream(
+        &StreamConfig {
+            channels: 1,
+            buffer_size: BufferSize::Fixed(CHANNEL_BUFFER_SIZE),
+            sample_rate: SampleRate(22050),
+        },
+        move |data: &[T], _| cb(data),
+        |err| panic!("{err:?}"),
+        None,
+    )
+    .unwrap()
+}
+
+fn start_speaker(
+    buffer_multiplier: NonZeroUsize,
+    mut audio_buffer: HeapCons<SampleFormat>,
+    audio_invalid_flag: Arc<AtomicBool>,
+) -> Stream {
+    // TODO: Figure out a better way to deal with latency
+    let mut is_warming_buffer = true;
+    let buffer_invalid = audio_invalid_flag.clone();
+
+    const AUDIO_DATA_SIZE: usize = CHANNEL_BUFFER_SIZE as usize * 2;
+    let min_buffer_fill = AUDIO_DATA_SIZE * buffer_multiplier.get();
+
+    create_speaker(move |data: &mut [i16]| {
+        // Relaxed ordering is fine here, as this is just a flag - the only data it's "protecting" (not really) is itself atomic.
+        if buffer_invalid
+            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            println!("Cleared invalid buffer");
+            // Avoid a screech
+            data.fill(0);
+            audio_buffer.clear();
+            is_warming_buffer = true;
+        } else if is_warming_buffer && audio_buffer.occupied_len() >= min_buffer_fill {
+            println!("Buffer warmed!");
+            is_warming_buffer = false;
+        } else if !is_warming_buffer && audio_buffer.occupied_len() < AUDIO_DATA_SIZE {
+            println!("WARN: Buffer underrun");
+            // Avoid a screech
+            data.fill(0);
+            is_warming_buffer = true;
+        }
+
+        if is_warming_buffer {
+            return;
+        }
+
+        audio_buffer.pop_slice(data);
+    })
+}
+
+fn create_speaker<T, D>(mut cb: D) -> Stream
+where
+    D: FnMut(&mut [T]) + Send + 'static,
+    T: SizedSample,
+{
+    let host = cpal::default_host();
+    let mic = host.default_input_device().unwrap();
+
+    mic.build_output_stream(
+        &StreamConfig {
+            channels: 2,
+            buffer_size: BufferSize::Fixed(CHANNEL_BUFFER_SIZE * 2),
+            sample_rate: SampleRate(48000),
+        },
+        move |data: &mut [T], _| cb(data),
+        |err| panic!("{err:?}"),
+        None,
+    )
+    .unwrap()
 }
 
 fn run_receiver(
@@ -103,158 +257,4 @@ fn run_receiver(
             buffer_invalid.store(true, Ordering::Release);
         }
     }
-}
-
-fn start_audio_output(
-    buffer_multiplier: NonZeroUsize,
-    mut audio_buffer: HeapCons<SampleFormat>,
-    audio_invalid_flag: Arc<AtomicBool>,
-) -> Stream {
-    // TODO: Figure out a better way to deal with latency
-    let mut is_warming_buffer = true;
-    let buffer_invalid = audio_invalid_flag.clone();
-
-    const AUDIO_DATA_SIZE: usize = CHANNEL_BUFFER_SIZE as usize * 2;
-    let min_buffer_fill = AUDIO_DATA_SIZE * buffer_multiplier.get();
-
-    setup_speaker(move |data: &mut [i16]| {
-        // Relaxed ordering is fine here, as this is just a flag - the only data it's "protecting" (not really) is itself atomic.
-        if buffer_invalid
-            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-        {
-            println!("Cleared invalid buffer");
-            // Avoid a screech
-            data.fill(0);
-            audio_buffer.clear();
-            is_warming_buffer = true;
-        } else if is_warming_buffer && audio_buffer.occupied_len() >= min_buffer_fill {
-            println!("Buffer warmed!");
-            is_warming_buffer = false;
-        } else if !is_warming_buffer && audio_buffer.occupied_len() < AUDIO_DATA_SIZE {
-            println!("WARN: Buffer underrun");
-            // Avoid a screech
-            data.fill(0);
-            is_warming_buffer = true;
-        }
-
-        if is_warming_buffer {
-            return;
-        }
-
-        audio_buffer.pop_slice(data);
-    })
-}
-
-fn get_args() -> Result<(SocketAddr, NonZeroUsize), Box<dyn Error>> {
-    let mut args = args().skip(1);
-
-    let ip = args
-        .next()
-        .ok_or_else(|| "No address provided".to_string())
-        .and_then(|e| IpAddr::from_str(&e).map_err(|e| format!("Bad address: {e:?}")))?;
-
-    let buffer_size = args
-        .next()
-        .map(|v| NonZeroUsize::from_str(&v).map_err(|e| format!("Bad buffer multiplier: {e:?}")))
-        .transpose()?
-        .unwrap_or_else(|| unsafe { NonZeroUsize::new_unchecked(1) });
-
-    Ok((SocketAddr::from((ip, LISTEN_PORT)), buffer_size.try_into()?))
-}
-
-fn start_sender(addr: SocketAddr, stream_name: &StreamName) -> Stream {
-    let send_sock = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
-    send_sock.connect(addr).unwrap();
-
-    println!("Sending to {addr} on {stream_name}");
-
-    let stream_name = stream_name.clone();
-
-    let mut idx: u32 = 0;
-    let mut send_buf = Cursor::new([0u8; MAX_VBAN_SAMPLES]);
-
-    setup_mic(move |samples: &[SampleFormat]| {
-        // Max bytes: 1436
-        // Max samples: 256
-        let chunk_size = (MAX_VBAN_SAMPLES / SAMPLE_BYTE_SIZE).min(256);
-
-        for chunk in samples.chunks(chunk_size) {
-            let sample_count = chunk.len();
-
-            idx = idx.wrapping_add(1);
-            send_buf.rewind().unwrap();
-
-            stream::write_header(
-                &mut send_buf,
-                // TODO: Avoid a clone here
-                stream_name.clone(),
-                idx,
-                VBANResolution::S16,
-                (sample_count - 1) as u8,
-            );
-
-            // Realistically, this doesn't actually need a cursor - VBAN's header size is fixed.
-            // But ay, why not. I can change it later if I want.
-            let curr_offset = send_buf.position() as usize;
-            let packet_len = curr_offset + (sample_count * SAMPLE_BYTE_SIZE);
-
-            let sample_dst_buf = &mut send_buf.get_mut()[curr_offset..packet_len];
-
-            // If this is ever an issue, we could replace it with the unsafe "ptr::copy_nonoverlapping()"
-            // and just do the length checking ahead of time rather than in each iteration (as per how this works currently)
-            for (src, dst) in chunk
-                .into_iter()
-                .map(|e| e.to_le_bytes())
-                .zip(sample_dst_buf.chunks_mut(SAMPLE_BYTE_SIZE))
-            {
-                dst.copy_from_slice(src.as_slice())
-            }
-
-            let final_buf = &send_buf.get_ref()[..packet_len];
-            send_sock.send(final_buf).unwrap();
-        }
-    })
-}
-
-fn setup_mic<T, D>(mut cb: D) -> Stream
-where
-    D: FnMut(&[T]) + Send + 'static,
-    T: SizedSample,
-{
-    let host = cpal::default_host();
-    let mic = host.default_input_device().unwrap();
-
-    mic.build_input_stream(
-        &StreamConfig {
-            channels: 1,
-            buffer_size: BufferSize::Fixed(CHANNEL_BUFFER_SIZE),
-            sample_rate: SampleRate(22050),
-        },
-        move |data: &[T], _| cb(data),
-        |err| panic!("{err:?}"),
-        None,
-    )
-    .unwrap()
-}
-
-fn setup_speaker<T, D>(mut cb: D) -> Stream
-where
-    D: FnMut(&mut [T]) + Send + 'static,
-    T: SizedSample,
-{
-    let host = cpal::default_host();
-    let mic = host.default_input_device().unwrap();
-
-    mic.build_output_stream(
-        &StreamConfig {
-            channels: 2,
-            buffer_size: BufferSize::Fixed(CHANNEL_BUFFER_SIZE * 2),
-            sample_rate: SampleRate(48000),
-        },
-        move |data: &mut [T], _| cb(data),
-        |err| panic!("{err:?}"),
-        None,
-    )
-    .unwrap()
 }
