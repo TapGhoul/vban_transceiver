@@ -22,6 +22,9 @@ const SAMPLE_BYTE_SIZE: usize = size_of::<SampleFormat>();
 const LISTEN_PORT: u16 = 6980;
 const MAX_VBAN_SAMPLES: usize = 1436;
 
+// 512 is too low, have to go at least 1024 cus system goes crunchy
+const AUDIO_BUFFER_SIZE: cpal::FrameCount = 2048;
+
 fn main() {
     let (addr, buffer_multiplier) = match get_args() {
         Ok(v) => v,
@@ -218,8 +221,7 @@ where
     mic.build_input_stream(
         &StreamConfig {
             channels: 1,
-            // 512 is too low, have to go 1024 cus system goes crunchy
-            buffer_size: BufferSize::Fixed(1024),
+            buffer_size: BufferSize::Fixed(AUDIO_BUFFER_SIZE),
             sample_rate: SampleRate(22050),
         },
         move |data: &[T], _| cb(data),
@@ -240,8 +242,7 @@ where
     mic.build_output_stream(
         &StreamConfig {
             channels: 2,
-            // 512 is too low, have to go 1024 cus system goes crunchy
-            buffer_size: BufferSize::Fixed(1024),
+            buffer_size: BufferSize::Fixed(AUDIO_BUFFER_SIZE),
             sample_rate: SampleRate(48000),
         },
         move |data: &mut [T], _| cb(data),
