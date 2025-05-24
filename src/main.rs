@@ -109,13 +109,16 @@ fn start_audio_output(
     let mut is_warming_buffer = true;
     let buffer_invalid = audio_invalid_flag.clone();
     setup_speaker(move |data: &mut [i16]| {
-        if buffer_invalid.load(Ordering::Acquire) {
+        // Relaxed ordering is fine here, as this is just a flag - the only data it's "protecting" (not really) is itself atomic.
+        if buffer_invalid
+            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
             println!("Cleared invalid buffer");
             // Avoid a screech
             data.fill(0);
             audio_buffer.clear();
             is_warming_buffer = true;
-            buffer_invalid.store(false, Ordering::Release);
         } else if is_warming_buffer
             && audio_buffer.occupied_len() >= data.len() * buffer_multiplier.get()
         {
