@@ -2,6 +2,7 @@ use deku::prelude::*;
 
 #[derive(Debug, Clone, PartialEq, DekuRead, DekuWrite)]
 #[deku(id_type = "u8", bits = 3)]
+#[repr(u8)]
 pub enum VBANResolution {
     U8 = 0,
     S16,

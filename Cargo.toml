@@ -7,6 +7,6 @@ edition = "2021"
 
 [dependencies]
 cpal = "0.15.3"
-deku = "0.18.1"
+deku = "0.19.1"
 num_enum = "0.7.3"
 ringbuf = "0.4.8"
