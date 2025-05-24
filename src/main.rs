@@ -23,7 +23,7 @@ const LISTEN_PORT: u16 = 6980;
 const MAX_VBAN_SAMPLES: usize = 1436;
 
 // 256 is too low, have to go at least 512 cus system goes crunchy
-const AUDIO_BUFFER_SIZE: cpal::FrameCount = 512;
+const CHANNEL_BUFFER_SIZE: cpal::FrameCount = 512;
 
 fn main() {
     let (addr, buffer_multiplier) = match get_args() {
@@ -40,7 +40,12 @@ fn main() {
     let _sender_handle = start_sender(addr, &stream_name);
 
     let buffer_invalid = Arc::new(AtomicBool::new(false));
-    let (mut producer, consumer) = HeapRb::<SampleFormat>::new(10240).split();
+    let buffer_max_capacity = (MAX_VBAN_SAMPLES / SAMPLE_BYTE_SIZE)
+        .max(CHANNEL_BUFFER_SIZE as usize * 2 * buffer_multiplier.get())
+        * 16;
+
+    // TODO: cache-align sample sets by buffer size - crossbeam_utils::CachePadded might do the trick
+    let (mut producer, consumer) = HeapRb::<SampleFormat>::new(buffer_max_capacity).split();
     let _output_handle = start_audio_output(buffer_multiplier, consumer, buffer_invalid.clone());
 
     run_receiver(addr, &stream_name, buffer_invalid, &mut producer);
@@ -108,6 +113,10 @@ fn start_audio_output(
     // TODO: Figure out a better way to deal with latency
     let mut is_warming_buffer = true;
     let buffer_invalid = audio_invalid_flag.clone();
+
+    const AUDIO_DATA_SIZE: usize = CHANNEL_BUFFER_SIZE as usize * 2;
+    let min_buffer_fill = AUDIO_DATA_SIZE * buffer_multiplier.get();
+
     setup_speaker(move |data: &mut [i16]| {
         // Relaxed ordering is fine here, as this is just a flag - the only data it's "protecting" (not really) is itself atomic.
         if buffer_invalid
@@ -119,12 +128,10 @@ fn start_audio_output(
             data.fill(0);
             audio_buffer.clear();
             is_warming_buffer = true;
-        } else if is_warming_buffer
-            && audio_buffer.occupied_len() >= data.len() * buffer_multiplier.get()
-        {
+        } else if is_warming_buffer && audio_buffer.occupied_len() >= min_buffer_fill {
             println!("Buffer warmed!");
             is_warming_buffer = false;
-        } else if !is_warming_buffer && audio_buffer.occupied_len() < data.len() {
+        } else if !is_warming_buffer && audio_buffer.occupied_len() < AUDIO_DATA_SIZE {
             println!("WARN: Buffer underrun");
             // Avoid a screech
             data.fill(0);
@@ -149,12 +156,9 @@ fn get_args() -> Result<(SocketAddr, NonZeroUsize), Box<dyn Error>> {
 
     let buffer_size = args
         .next()
-        .map(|v| {
-            v.parse()
-                .map_err(|e| format!("Bad buffer multiplier: {e:?}"))
-        })
+        .map(|v| NonZeroUsize::from_str(&v).map_err(|e| format!("Bad buffer multiplier: {e:?}")))
         .transpose()?
-        .unwrap_or(1);
+        .unwrap_or_else(|| unsafe { NonZeroUsize::new_unchecked(1) });
 
     Ok((SocketAddr::from((ip, LISTEN_PORT)), buffer_size.try_into()?))
 }
@@ -224,7 +228,7 @@ where
     mic.build_input_stream(
         &StreamConfig {
             channels: 1,
-            buffer_size: BufferSize::Fixed(AUDIO_BUFFER_SIZE),
+            buffer_size: BufferSize::Fixed(CHANNEL_BUFFER_SIZE),
             sample_rate: SampleRate(22050),
         },
         move |data: &[T], _| cb(data),
@@ -245,7 +249,7 @@ where
     mic.build_output_stream(
         &StreamConfig {
             channels: 2,
-            buffer_size: BufferSize::Fixed(AUDIO_BUFFER_SIZE * 2),
+            buffer_size: BufferSize::Fixed(CHANNEL_BUFFER_SIZE * 2),
             sample_rate: SampleRate(48000),
         },
         move |data: &mut [T], _| cb(data),
