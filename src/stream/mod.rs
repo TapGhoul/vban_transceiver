@@ -83,3 +83,28 @@ pub fn generate_sin(frame_start: u32, buf: &mut Vec<u8>) {
         buf.push(e);
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::io::empty;
+
+    #[test]
+    fn header_size() {
+        let header = VBANHeader {
+            sub_proto: 0,
+            rate: VBANSampleRate::Rate48000,
+            sample_count: 0,
+            channel_count: 1,
+            codec: 0,
+            format_bit: VBANResolution::U8,
+            stream_name: StreamName::try_from("Stream1").unwrap(),
+            frame: 0,
+        };
+
+        let mut writer = Writer::new(empty());
+        header.to_writer(&mut writer, ()).unwrap();
+        writer.finalize().unwrap();
+        assert_eq!(writer.bits_written, 28 * 8);
+    }
+}

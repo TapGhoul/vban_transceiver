@@ -20,7 +20,7 @@ mod stream;
 type SampleFormat = i16;
 const SAMPLE_BYTE_SIZE: usize = size_of::<SampleFormat>();
 const LISTEN_PORT: u16 = 6980;
-const MAX_VBAN_SAMPLES: usize = 1436;
+const MAX_VBAN_PACKET_SIZE: usize = 1436;
 
 // 256 is too low, have to go at least 512 cus system goes crunchy
 const CHANNEL_BUFFER_SIZE: cpal::FrameCount = 512;
@@ -40,7 +40,7 @@ fn main() {
     let _sender_handle = start_mic(addr, &stream_name);
 
     let buffer_invalid = Arc::new(AtomicBool::new(false));
-    let buffer_max_capacity = (MAX_VBAN_SAMPLES / SAMPLE_BYTE_SIZE)
+    let buffer_max_capacity = (MAX_VBAN_PACKET_SIZE / SAMPLE_BYTE_SIZE)
         .max(CHANNEL_BUFFER_SIZE as usize * 2 * buffer_multiplier.get())
         * 16;
 
@@ -77,12 +77,12 @@ fn start_mic(addr: SocketAddr, stream_name: &StreamName) -> Stream {
     let stream_name = stream_name.clone();
 
     let mut idx: u32 = 0;
-    let mut send_buf = Cursor::new([0u8; MAX_VBAN_SAMPLES]);
+    let mut send_buf = Cursor::new([0u8; MAX_VBAN_PACKET_SIZE]);
 
     create_mic(move |samples: &[SampleFormat]| {
         // Max bytes: 1436
         // Max samples: 256
-        let chunk_size = (MAX_VBAN_SAMPLES / SAMPLE_BYTE_SIZE).min(256);
+        let chunk_size = (MAX_VBAN_PACKET_SIZE / SAMPLE_BYTE_SIZE).min(256);
 
         for chunk in samples.chunks(chunk_size) {
             let sample_count = chunk.len();
@@ -215,7 +215,7 @@ fn run_receiver(
     addr.set_port(0);
     recv_sock.connect(addr).unwrap();
 
-    let mut buf = [0u8; MAX_VBAN_SAMPLES];
+    let mut buf = [0u8; MAX_VBAN_PACKET_SIZE];
     let mut next_expected_frame = None;
 
     loop {
