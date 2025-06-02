@@ -1,6 +1,7 @@
 use deku::prelude::*;
+use strum::Display;
 
-#[derive(Debug, Clone, DekuRead, DekuWrite, PartialEq)]
+#[derive(Debug, Clone, PartialEq, DekuRead, DekuWrite, Display)]
 #[deku(id_type = "u8", bits = 5)]
 #[repr(u8)]
 pub enum VBANSampleRate {

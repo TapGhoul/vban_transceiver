@@ -10,3 +10,4 @@ cpal = "0.15.3"
 deku = "0.18.1"
 num_enum = "0.7.3"
 ringbuf = "0.4.8"
+strum = { version = "0.27.1 ", features = ["derive"] }

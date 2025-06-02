@@ -1,6 +1,7 @@
 use deku::prelude::*;
+use strum::Display;
 
-#[derive(Debug, Clone, PartialEq, DekuRead, DekuWrite)]
+#[derive(Debug, Clone, PartialEq, DekuRead, DekuWrite, Display)]
 #[deku(id_type = "u8", bits = 3)]
 #[repr(u8)]
 pub enum VBANResolution {
