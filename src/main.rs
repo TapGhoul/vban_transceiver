@@ -23,7 +23,7 @@ const LISTEN_PORT: u16 = 6980;
 const MAX_VBAN_PACKET_SIZE: usize = 1436;
 
 // 256 is too low, have to go at least 512 cus system goes crunchy
-const CHANNEL_BUFFER_SIZE: cpal::FrameCount = 512;
+const CHANNEL_BUFFER_SIZE: cpal::FrameCount = 128;
 
 fn main() {
     let (addr, buffer_multiplier) = match get_args() {
