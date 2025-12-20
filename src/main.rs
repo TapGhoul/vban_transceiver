@@ -2,7 +2,7 @@ use crate::stream::resolution::VBANResolution;
 use crate::stream::stream_name::StreamName;
 use crate::stream::try_parse_header;
 use cpal::traits::{DeviceTrait, HostTrait};
-use cpal::{BufferSize, SampleRate, SizedSample, Stream, StreamConfig};
+use cpal::{BufferSize, SizedSample, Stream, StreamConfig};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use std::env::args;
@@ -135,7 +135,7 @@ where
         &StreamConfig {
             channels: 1,
             buffer_size: BufferSize::Fixed(CHANNEL_BUFFER_SIZE),
-            sample_rate: SampleRate(22050),
+            sample_rate: 22050,
         },
         move |data: &[T], _| cb(data),
         |err| panic!("{err:?}"),
@@ -197,7 +197,7 @@ where
         &StreamConfig {
             channels: 2,
             buffer_size: BufferSize::Fixed(CHANNEL_BUFFER_SIZE * 2),
-            sample_rate: SampleRate(48000),
+            sample_rate: 48000,
         },
         move |data: &mut [T], _| cb(data),
         |err| panic!("{err:?}"),
