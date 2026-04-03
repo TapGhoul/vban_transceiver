@@ -14,4 +14,4 @@ ringbuf = "0.4.8"
 strum = { version = "0.28.0", features = ["derive"] }
 
 [profile.release]
-lto = "thin"
+lto = "fat"
