@@ -3,7 +3,7 @@ use crate::stream::sample_rate::VBANSampleRate;
 use crate::stream::stream_name::StreamName;
 use crate::stream::sub_proto::SubProto;
 use deku::prelude::*;
-use std::io::{Cursor, Seek};
+use std::io::{Seek, Write};
 
 pub mod resolution;
 pub mod sample_rate;
@@ -25,14 +25,16 @@ pub struct VBANHeader {
     frame: u32,
 }
 
-pub fn write_header<const N: usize>(
-    buf: &mut Cursor<[u8; N]>,
+pub fn write_header<T: Write + Seek>(
+    buf: &mut T,
     stream_name: StreamName,
     frame: u32,
     format_bit: VBANResolution,
     sample_count: u8,
 ) {
-    let written = VBANHeader {
+    let mut writer = Writer::new(buf);
+
+    VBANHeader {
         rate: VBANSampleRate::Rate22050,
         sub_proto: SubProto::Audio,
         sample_count,
@@ -42,10 +44,10 @@ pub fn write_header<const N: usize>(
         stream_name,
         frame,
     }
-    .to_slice(buf.get_mut())
+    .to_writer(&mut writer, ())
     .unwrap();
 
-    buf.seek_relative(written as i64).unwrap();
+    writer.finalize().unwrap();
 }
 
 pub fn try_parse_header<'a>(

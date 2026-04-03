@@ -1,4 +1,4 @@
-use deku::{DekuRead, DekuWrite};
+use deku::prelude::*;
 use strum::Display;
 
 #[derive(Debug, Clone, PartialEq, DekuRead, DekuWrite, Display)]

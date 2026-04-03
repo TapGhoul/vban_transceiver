@@ -7,7 +7,7 @@ use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use std::env::args;
 use std::error::Error;
-use std::io::{Cursor, Seek};
+use std::io::{Cursor, Seek, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::num::NonZeroUsize;
 use std::process::exit;
@@ -129,16 +129,10 @@ fn start_mic(addr: SocketAddr, stream_name: &StreamName) -> Stream {
                 let curr_offset = send_buf.position() as usize;
                 let packet_len = curr_offset + (sample_count * SAMPLE_BYTE_SIZE);
 
-                let sample_dst_buf = &mut send_buf.get_mut()[curr_offset..packet_len];
-
                 // If this is ever an issue, we could replace it with the unsafe "ptr::copy_nonoverlapping()"
-                // and just do the length checking ahead of time rather than in each iteration (as per how this works currently)
-                for (src, dst) in chunk
-                    .into_iter()
-                    .map(|e| e.to_le_bytes())
-                    .zip(sample_dst_buf.chunks_mut(SAMPLE_BYTE_SIZE))
-                {
-                    dst.copy_from_slice(src.as_slice())
+                // and just do the length checking ahead of time rather than in each iteration
+                for src in chunk.into_iter().map(|e| e.to_le_bytes()) {
+                    send_buf.write_all(src.as_slice()).unwrap();
                 }
 
                 let final_buf = &send_buf.get_ref()[..packet_len];
