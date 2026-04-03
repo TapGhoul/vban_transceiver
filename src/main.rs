@@ -118,7 +118,9 @@ fn start_mic(addr: SocketAddr, stream_name: &StreamName) -> Stream {
             }
 
             let final_buf = &send_buf.get_ref()[..packet_len];
-            send_sock.send(final_buf).unwrap();
+            if let Err(err) = send_sock.send(final_buf) {
+                println!("Failed to send data: {err:?}");
+            }
         }
     })
 }
