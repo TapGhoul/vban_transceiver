@@ -83,10 +83,6 @@ fn start_mic(addr: SocketAddr, stream_name: &StreamName) -> Stream {
         let mut net_borked = false;
 
         move |samples: &[SampleFormat]| {
-            // Max bytes: 1436
-            // Max samples: 256
-            let chunk_size = (MAX_VBAN_PACKET_SIZE / SAMPLE_BYTE_SIZE).min(256);
-
             if net_borked {
                 send_buf.rewind().unwrap();
                 stream::write_header(
@@ -109,6 +105,9 @@ fn start_mic(addr: SocketAddr, stream_name: &StreamName) -> Stream {
                 }
             }
 
+            // Max bytes: 1436
+            // Max samples: 256
+            let chunk_size = (MAX_VBAN_PACKET_SIZE / SAMPLE_BYTE_SIZE).min(256);
             for chunk in samples.chunks(chunk_size) {
                 let sample_count = chunk.len();
 
@@ -124,18 +123,13 @@ fn start_mic(addr: SocketAddr, stream_name: &StreamName) -> Stream {
                     (sample_count - 1) as u8,
                 );
 
-                // Realistically, this doesn't actually need a cursor - VBAN's header size is fixed.
-                // But ay, why not. I can change it later if I want.
-                let curr_offset = send_buf.position() as usize;
-                let packet_len = curr_offset + (sample_count * SAMPLE_BYTE_SIZE);
-
                 // If this is ever an issue, we could replace it with the unsafe "ptr::copy_nonoverlapping()"
                 // and just do the length checking ahead of time rather than in each iteration
                 for src in chunk.into_iter().map(|e| e.to_le_bytes()) {
                     send_buf.write_all(src.as_slice()).unwrap();
                 }
 
-                let final_buf = &send_buf.get_ref()[..packet_len];
+                let final_buf = &send_buf.get_ref()[..send_buf.position() as _];
                 if let Err(err) = send_sock.send(final_buf) {
                     println!("WARN: Failed to send data: {err:?}");
                     net_borked = true;
