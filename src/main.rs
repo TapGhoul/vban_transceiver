@@ -77,49 +77,76 @@ fn start_mic(addr: SocketAddr, stream_name: &StreamName) -> Stream {
 
     let stream_name = stream_name.clone();
 
-    let mut idx: u32 = 0;
-    let mut send_buf = Cursor::new([0u8; MAX_VBAN_PACKET_SIZE]);
+    create_mic({
+        let mut idx: u32 = 0;
+        let mut send_buf = Cursor::new([0u8; MAX_VBAN_PACKET_SIZE]);
+        let mut net_borked = false;
 
-    create_mic(move |samples: &[SampleFormat]| {
-        // Max bytes: 1436
-        // Max samples: 256
-        let chunk_size = (MAX_VBAN_PACKET_SIZE / SAMPLE_BYTE_SIZE).min(256);
+        move |samples: &[SampleFormat]| {
+            // Max bytes: 1436
+            // Max samples: 256
+            let chunk_size = (MAX_VBAN_PACKET_SIZE / SAMPLE_BYTE_SIZE).min(256);
 
-        for chunk in samples.chunks(chunk_size) {
-            let sample_count = chunk.len();
+            if net_borked {
+                send_buf.rewind().unwrap();
+                stream::write_header(
+                    &mut send_buf,
+                    // TODO: Avoid a clone here
+                    stream_name.clone(),
+                    idx,
+                    VBANResolution::S16,
+                    0u8,
+                );
+                let curr_offset = send_buf.position() as usize;
+                let final_buf = &send_buf.get_ref()[..curr_offset];
 
-            idx = idx.wrapping_add(1);
-            send_buf.rewind().unwrap();
-
-            stream::write_header(
-                &mut send_buf,
-                // TODO: Avoid a clone here
-                stream_name.clone(),
-                idx,
-                VBANResolution::S16,
-                (sample_count - 1) as u8,
-            );
-
-            // Realistically, this doesn't actually need a cursor - VBAN's header size is fixed.
-            // But ay, why not. I can change it later if I want.
-            let curr_offset = send_buf.position() as usize;
-            let packet_len = curr_offset + (sample_count * SAMPLE_BYTE_SIZE);
-
-            let sample_dst_buf = &mut send_buf.get_mut()[curr_offset..packet_len];
-
-            // If this is ever an issue, we could replace it with the unsafe "ptr::copy_nonoverlapping()"
-            // and just do the length checking ahead of time rather than in each iteration (as per how this works currently)
-            for (src, dst) in chunk
-                .into_iter()
-                .map(|e| e.to_le_bytes())
-                .zip(sample_dst_buf.chunks_mut(SAMPLE_BYTE_SIZE))
-            {
-                dst.copy_from_slice(src.as_slice())
+                if send_sock.send(final_buf).is_ok() {
+                    // We fall through our check here - we sent 0 samples, so there won't be any buffer bloat.
+                    net_borked = false;
+                    println!("Mic network recovered");
+                } else {
+                    return;
+                }
             }
 
-            let final_buf = &send_buf.get_ref()[..packet_len];
-            if let Err(err) = send_sock.send(final_buf) {
-                println!("Failed to send data: {err:?}");
+            for chunk in samples.chunks(chunk_size) {
+                let sample_count = chunk.len();
+
+                idx = idx.wrapping_add(1);
+                send_buf.rewind().unwrap();
+
+                stream::write_header(
+                    &mut send_buf,
+                    // TODO: Avoid a clone here
+                    stream_name.clone(),
+                    idx,
+                    VBANResolution::S16,
+                    (sample_count - 1) as u8,
+                );
+
+                // Realistically, this doesn't actually need a cursor - VBAN's header size is fixed.
+                // But ay, why not. I can change it later if I want.
+                let curr_offset = send_buf.position() as usize;
+                let packet_len = curr_offset + (sample_count * SAMPLE_BYTE_SIZE);
+
+                let sample_dst_buf = &mut send_buf.get_mut()[curr_offset..packet_len];
+
+                // If this is ever an issue, we could replace it with the unsafe "ptr::copy_nonoverlapping()"
+                // and just do the length checking ahead of time rather than in each iteration (as per how this works currently)
+                for (src, dst) in chunk
+                    .into_iter()
+                    .map(|e| e.to_le_bytes())
+                    .zip(sample_dst_buf.chunks_mut(SAMPLE_BYTE_SIZE))
+                {
+                    dst.copy_from_slice(src.as_slice())
+                }
+
+                let final_buf = &send_buf.get_ref()[..packet_len];
+                if let Err(err) = send_sock.send(final_buf) {
+                    println!("WARN: Failed to send data: {err:?}");
+                    net_borked = true;
+                    return;
+                }
             }
         }
     })
