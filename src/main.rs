@@ -1,3 +1,6 @@
+#[cfg(not(target_endian = "little"))]
+compile_error!("This software only supports little endian at this time.");
+
 use crate::stream::resolution::VBANResolution;
 use crate::stream::stream_name::StreamName;
 use crate::stream::try_parse_header;
@@ -7,7 +10,7 @@ use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use std::env::args;
 use std::error::Error;
-use std::io::{Cursor, Seek, Write};
+use std::io::{Cursor, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::num::NonZeroUsize;
 use std::process::exit;
@@ -66,7 +69,7 @@ fn get_args() -> Result<(SocketAddr, NonZeroUsize), Box<dyn Error>> {
         .transpose()?
         .unwrap_or_else(|| unsafe { NonZeroUsize::new_unchecked(1) });
 
-    Ok((SocketAddr::from((ip, LISTEN_PORT)), buffer_size.try_into()?))
+    Ok((SocketAddr::from((ip, LISTEN_PORT)), buffer_size))
 }
 
 fn start_mic(addr: SocketAddr, stream_name: &StreamName) -> Stream {
@@ -79,12 +82,12 @@ fn start_mic(addr: SocketAddr, stream_name: &StreamName) -> Stream {
 
     create_mic({
         let mut idx: u32 = 0;
-        let mut send_buf = Cursor::new([0u8; MAX_VBAN_PACKET_SIZE]);
+        let mut buf = [0u8; MAX_VBAN_PACKET_SIZE];
         let mut net_borked = false;
 
         move |samples: &[SampleFormat]| {
             if net_borked {
-                send_buf.rewind().unwrap();
+                let mut send_buf = Cursor::new(&mut buf[..]);
                 stream::write_header(
                     &mut send_buf,
                     // TODO: Avoid a clone here
@@ -93,8 +96,9 @@ fn start_mic(addr: SocketAddr, stream_name: &StreamName) -> Stream {
                     VBANResolution::S16,
                     0u8,
                 );
+
                 let curr_offset = send_buf.position() as usize;
-                let final_buf = &send_buf.get_ref()[..curr_offset];
+                let final_buf = &send_buf.into_inner()[..curr_offset];
 
                 if send_sock.send(final_buf).is_ok() {
                     // We fall through our check here - we sent 0 samples, so there won't be any buffer bloat.
@@ -112,8 +116,8 @@ fn start_mic(addr: SocketAddr, stream_name: &StreamName) -> Stream {
                 let sample_count = chunk.len();
 
                 idx = idx.wrapping_add(1);
-                send_buf.rewind().unwrap();
 
+                let mut send_buf = Cursor::new(&mut buf[..]);
                 stream::write_header(
                     &mut send_buf,
                     // TODO: Avoid a clone here
@@ -125,9 +129,7 @@ fn start_mic(addr: SocketAddr, stream_name: &StreamName) -> Stream {
 
                 // If this is ever an issue, we could replace it with the unsafe "ptr::copy_nonoverlapping()"
                 // and just do the length checking ahead of time rather than in each iteration
-                for src in chunk.into_iter().map(|e| e.to_le_bytes()) {
-                    send_buf.write_all(src.as_slice()).unwrap();
-                }
+                send_buf.write_all(bytemuck::cast_slice(chunk)).unwrap();
 
                 let final_buf = &send_buf.get_ref()[..send_buf.position() as _];
                 if let Err(err) = send_sock.send(final_buf) {
@@ -238,8 +240,9 @@ fn run_receiver(
 
     loop {
         let len = recv_sock.recv(&mut buf).unwrap();
+        let mut buf = Cursor::new(&buf[..len]);
 
-        let Some((frame, sample_count, buf)) = try_parse_header(&stream_name, &buf[..len]) else {
+        let Some((frame, sample_count)) = try_parse_header(stream_name, &mut buf) else {
             continue;
         };
 
@@ -255,15 +258,18 @@ fn run_receiver(
             buffer_invalid.store(true, Ordering::Release);
         }
 
-        let chunks = buf.chunks_exact(SAMPLE_BYTE_SIZE);
-        if !chunks.remainder().is_empty() {
+        let buf_offset = buf.position() as usize;
+        let buf = &buf.into_inner()[buf_offset..];
+
+        if !buf.len().is_multiple_of(SAMPLE_BYTE_SIZE) {
+            // We don't actually care if the buffers aren't identical, just that the data is valid.
+            // We can be lazy this way wheeeeee
             println!(
                 "WARN: VBAN protocol violation - buffer is not a multiple of sample byte size!"
             );
         }
 
-        let added_count =
-            producer.push_iter(chunks.map(|e| SampleFormat::from_le_bytes(e.try_into().unwrap())));
+        let added_count = producer.push_slice(bytemuck::cast_slice(buf));
 
         // channels = 2
         let expected_count = sample_count * 2;

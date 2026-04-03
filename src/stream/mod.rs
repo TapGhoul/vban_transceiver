@@ -3,7 +3,7 @@ use crate::stream::sample_rate::VBANSampleRate;
 use crate::stream::stream_name::StreamName;
 use crate::stream::sub_proto::SubProto;
 use deku::prelude::*;
-use std::io::{Seek, Write};
+use std::io::{Read, Seek, Write};
 
 pub mod resolution;
 pub mod sample_rate;
@@ -50,10 +50,10 @@ pub fn write_header<T: Write + Seek>(
     writer.finalize().unwrap();
 }
 
-pub fn try_parse_header<'a>(
-    stream_name: &'a StreamName,
-    buf: &'a [u8],
-) -> Option<(u32, usize, &'a [u8])> {
+pub fn try_parse_header<T: Read + Seek>(
+    stream_name: &'_ StreamName,
+    buf: &'_ mut T,
+) -> Option<(u32, usize)> {
     macro_rules! check {
         ($lhs:expr, $rhs:expr, $err:literal) => {
             if $lhs != $rhs {
@@ -63,8 +63,8 @@ pub fn try_parse_header<'a>(
         };
     }
 
-    let ((buf, bit_offset), header) = VBANHeader::from_bytes((buf, 0)).unwrap();
-    assert_eq!(bit_offset, 0, "VBAN header is not byte-aligned!");
+    let (bits_read, header) = VBANHeader::from_reader((buf, 0)).unwrap();
+    assert_eq!(bits_read % 8, 0, "VBAN header is not byte-aligned!");
 
     check!(header.sub_proto, SubProto::Audio, "subproto");
     check!(&header.stream_name, stream_name, "stream name");
@@ -74,7 +74,7 @@ pub fn try_parse_header<'a>(
     check!(header.rate, VBANSampleRate::Rate48000, "sample rate");
     check!(header.format_bit, VBANResolution::S16, "format");
 
-    Some((header.frame, header.sample_count as usize + 1, buf))
+    Some((header.frame, header.sample_count as usize + 1))
 }
 
 #[allow(dead_code)]
