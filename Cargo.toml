@@ -7,10 +7,10 @@ license = "MIT OR Apache-2.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bytemuck = "1.25.0"
-cpal = { version = "0.17.3", features = ["audio_thread_priority"] }
+bytemuck = "1.25.2"
+cpal = { version = "0.18.2", features = ["pipewire", "realtime-dbus"] }
 deku = "0.20.3"
-ringbuf = "0.4.8"
+ringbuf = "0.5.3"
 strum = { version = "0.28.0", features = ["derive"] }
 
 [profile.release]

@@ -4,7 +4,7 @@ compile_error!("This software only supports little endian at this time.");
 use crate::stream::resolution::VBANResolution;
 use crate::stream::stream_name::StreamName;
 use crate::stream::try_parse_header;
-use cpal::traits::{DeviceTrait, HostTrait};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SizedSample, Stream, StreamConfig};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
@@ -15,8 +15,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::num::NonZeroUsize;
 use std::process::exit;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod stream;
 
@@ -80,7 +80,7 @@ fn start_mic(addr: SocketAddr, stream_name: &StreamName) -> Stream {
 
     let stream_name = stream_name.clone();
 
-    create_mic({
+    let stream = create_mic({
         let mut idx: u32 = 0;
         let mut buf = [0u8; MAX_VBAN_PACKET_SIZE];
         let mut net_borked = false;
@@ -139,7 +139,10 @@ fn start_mic(addr: SocketAddr, stream_name: &StreamName) -> Stream {
                 }
             }
         }
-    })
+    });
+
+    stream.play().expect("Failed to start mic stream");
+    stream
 }
 
 fn create_mic<T, D>(mut cb: D) -> Stream
@@ -151,7 +154,7 @@ where
     let mic = host.default_input_device().unwrap();
 
     mic.build_input_stream(
-        &StreamConfig {
+        StreamConfig {
             channels: 1,
             buffer_size: BufferSize::Fixed(CHANNEL_BUFFER_SIZE),
             sample_rate: 22050,
@@ -175,7 +178,7 @@ fn start_speaker(
     const AUDIO_DATA_SIZE: usize = CHANNEL_BUFFER_SIZE as usize * 2;
     let min_buffer_fill = AUDIO_DATA_SIZE * buffer_multiplier.get();
 
-    create_speaker(move |data: &mut [i16]| {
+    let stream = create_speaker(move |data: &mut [i16]| {
         // Relaxed ordering is fine here, as this is just a flag - the only data it's "protecting" (not really) is itself atomic.
         if buffer_invalid
             .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
@@ -201,7 +204,10 @@ fn start_speaker(
         }
 
         audio_buffer.pop_slice(data);
-    })
+    });
+
+    stream.play().expect("Failed to start speaker stream");
+    stream
 }
 
 fn create_speaker<T, D>(mut cb: D) -> Stream
@@ -213,7 +219,7 @@ where
     let mic = host.default_input_device().unwrap();
 
     mic.build_output_stream(
-        &StreamConfig {
+        StreamConfig {
             channels: 2,
             buffer_size: BufferSize::Fixed(CHANNEL_BUFFER_SIZE * 2),
             sample_rate: 48000,
