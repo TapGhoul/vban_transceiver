@@ -179,9 +179,8 @@ fn start_speaker(
     let min_buffer_fill = AUDIO_DATA_SIZE * buffer_multiplier.get();
 
     let stream = create_speaker(move |data: &mut [i16]| {
-        // Relaxed ordering is fine here, as this is just a flag - the only data it's "protecting" (not really) is itself atomic.
         if buffer_invalid
-            .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+            .compare_exchange(true, false, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
             println!("Cleared invalid buffer");
@@ -262,6 +261,7 @@ fn run_receiver(
         if expected_frame != frame {
             println!("WARN: Discontinuity: expected {expected_frame}, got {frame}");
             buffer_invalid.store(true, Ordering::Release);
+            continue;
         }
 
         let buf_offset = buf.position() as usize;
